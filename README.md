@@ -1,6 +1,6 @@
-# Advocate — Autonomous Web Resolution Agent
+# Advocate — Autonomous Consumer-Advocacy Agent
 
-## Problem Statement
+Theme 3: Agentic Productivity · AI-Powered Consumer Advocacy
 
 **Advocate** is an autonomous agent that resolves consumer issues on a user's
 behalf. A user declares a desired outcome — *"get a full refund for order #4821;
@@ -16,10 +16,24 @@ it arrived broken"* — plus a **Resolution Policy** (acceptance thresholds, har
 …until the issue is **resolved**, **denied**, or its **escalation budget runs
 out**.
 
-You are given a **working foundation**. You implement the agent's **decision
-core** — the deterministic *negotiator* and the durable *orchestrator* loop that
-drives it. The LLM-facing pieces (strategist, classifier) are already built, so
-you can focus on the logic that makes the agent correct and trustworthy.
+---
+
+## Core Innovation — The Trust Boundary
+
+Most agent systems let the LLM make all decisions. Advocate draws a hard line:
+
+> **The LLM perceives and phrases. Deterministic code decides.**
+
+The Strategist and Classifier use an LLM to understand context and draft
+messages. But the **Negotiator** — the component that makes consequential
+decisions (accept money? cross a guardrail? give up?) — is **pure deterministic
+Python**. No LLM, no I/O, no randomness.
+
+A model hallucination can **never**:
+- Silently accept a payment below the user's threshold
+- Accept a forbidden outcome (like store credit when the user wants cash)
+- Exceed the escalation budget
+- Fall for a retention dark pattern on a cancellation goal
 
 ---
 
@@ -27,11 +41,12 @@ you can focus on the logic that makes the agent correct and trustworthy.
 
 | Layer | Choice |
 |---|---|
-| **Language** | Python 3.8+ — **standard library only** (no third-party deps in the foundation) |
+| **Language** | Python 3.8+ — **standard library only** (zero `pip install` required) |
 | **Web / API server** | stdlib `http.server` (`ThreadingHTTPServer`), JSON over HTTP |
-| **Persistence** | SQLite (`sqlite3`) — one row per Case, stored as a JSON blob; survives restarts |
-| **LLM client** | Provider-agnostic, built on `urllib`. Works with OpenAI, Anthropic Claude, Groq, DeepSeek, and Ollama (local) |
-| **Frontend** | Single-file vanilla HTML/JS dashboard (`web/index.html`) that polls the API |
+| **Persistence** | SQLite (`sqlite3`) — WAL mode, one row per Case as JSON blob; survives restarts |
+| **LLM provider** | Groq (Llama 3.3 70B Versatile) — free tier, fast inference |
+| **LLM client** | Provider-agnostic, built on `urllib`. Works with OpenAI, Anthropic Claude, Groq, DeepSeek, and Ollama |
+| **Frontend** | Single-file vanilla HTML/JS dashboard (`web/index.html`) that polls the API every 1.5s |
 
 ---
 
@@ -44,12 +59,12 @@ you can focus on the logic that makes the agent correct and trustworthy.
                            └───────────────┬─────────────────────────────┘
                                            │ HTTP (JSON)
                            ┌───────────────▼─────────────────────────────┐
-   server.py (stdlib http) │  GET/POST /api/cases   ·   run_agent(case_id)│  ← spawns a
+   server.py (stdlib http) │  GET/POST /api/cases · run_agent(case_id)    │  ← spawns a
    ──────────────────────► │  serves UI + storage-backed API              │    background thread
                            └───────────────┬─────────────────────────────┘
-                                           │ calls (YOU wire this up)
+                                           │
                   ┌────────────────────────▼───────────────────────────────┐
-                  │  advocate/agent/orchestrator.py   (THE LOOP — YOU build) │
+                  │  advocate/agent/orchestrator.py   (THE DURABLE LOOP)    │
                   │                                                          │
                   │   plan ─► open ─► [ receive ─► classify ─► decide ─►     │
                   │                     act ─► persist ] ─► terminal/pause   │
@@ -58,23 +73,20 @@ you can focus on the logic that makes the agent correct and trustworthy.
               ┌───────▼──┐   ┌───────▼─────┐  ┌─────▼──────┐ ┌────▼────────────┐
               │strategist│   │ classifier  │  │ negotiator │ │   Channel       │
               │  (LLM)   │   │   (LLM)     │  │  (CODE —   │ │  (send/receive) │
-              │ →CasePlan│   │→Classification│ │ no LLM!)  │ │ Mock | Web | …  │
-              │ PROVIDED │   │ PROVIDED    │  │ YOU build  │ │ provided        │
-              └────┬─────┘   └──────┬──────┘  │ →Decision  │ └────┬────────────┘
-                   │                │         └─────┬──────┘      │
-                   └────────────────┴───────────────┴────────────┘
+              │ →CasePlan│   │→Classifcatn │  │  no LLM!)  │ │ Mock | Web | …  │
+              └──────────┘   └─────────────┘  │ →Decision  │ └────────────────┘
+                                               └────────────┘
                                     │ persist after every step
                            ┌────────▼─────────┐      ┌──────────────────┐
-                           │ store.py (SQLite)│      │  llm.py (provider│
-                           │  Case JSON blobs │      │  -agnostic chat) │
+                           │ store.py (SQLite) │      │  llm.py (provider│
+                           │  Case JSON blobs  │      │  -agnostic chat) │
                            └──────────────────┘      └──────────────────┘
 ```
 
 **Key design seam:** the LLM *understands and phrases* (strategist, classifier),
 but the **consequential decision** — accept money? cross a guardrail? give up? —
 is made by **deterministic code** in `negotiator.py`. A model mistake can never
-silently approve a payment. Preserving this seam is what makes the agent
-trustworthy, and reviewers will look for it.
+silently approve a payment.
 
 ---
 
@@ -103,7 +115,7 @@ NEW ─► PLANNED ─► OPEN ─►(reply)─► [ negotiating ] ──► RES
    advances.
 5. At a guardrail the agent sets `NEEDS_APPROVAL` and pauses. The human clicks
    approve / reject → `POST /api/cases/<id>/approve` records the decision and
-   **resumes** the agent.
+   **resumes** the agent on a new background thread.
 6. The loop ends at a terminal state: `RESOLVED`, `DENIED`, or `ABANDONED`.
 
 ---
@@ -111,8 +123,8 @@ NEW ─► PLANNED ─► OPEN ─►(reply)─► [ negotiating ] ──► RES
 ## Project Structure
 
 ```
-advocate-candidate/
-├── server.py                     PROVIDED     web server shell + run_agent() hook
+Advocate/
+├── server.py                     MODIFIED     web server + agent wiring + approve/resume
 ├── web/index.html                PROVIDED     dashboard (case list, timeline, approve)
 ├── examples/                     PROVIDED     sample cases (refund, subscription cancel)
 ├── advocate/
@@ -122,170 +134,123 @@ advocate-candidate/
 │   ├── channels/
 │   │   ├── base.py               PROVIDED     Channel interface (send/receive)
 │   │   ├── mock.py               PROVIDED     simulated adversarial support rep
-│   │   ├── web_playwright.py     TODO          real browser channel (optional stretch)
-│   │   └── email_channel.py      TODO          real email channel (optional stretch)
+│   │   ├── web_playwright.py     STUB         real browser channel (future scope)
+│   │   └── email_channel.py      STUB         real email channel (future scope)
 │   └── agent/
 │       ├── strategist.py         PROVIDED     plan a CasePlan from goal+policy (LLM)
 │       ├── classifier.py         PROVIDED     interpret one reply → Classification (LLM)
-│       ├── negotiator.py         TODO          Task 1 — decide next action (CODE)
-│       └── orchestrator.py       TODO          Task 2 — the durable resolution loop
-└── requirements.txt              PROVIDED     (foundation = stdlib only)
+│       ├── negotiator.py         ✅ BUILT      deterministic decision engine (162 lines)
+│       └── orchestrator.py       ✅ BUILT      durable resolution loop (409 lines)
+├── CLAUDE.md                     ADDED        project context for Claude Code
+├── .env.example                  PROVIDED     LLM configuration template
+└── requirements.txt              PROVIDED     (stdlib only — zero deps)
 ```
+
+---
+
+## What Was Built
+
+### Negotiator — `advocate/agent/negotiator.py` (162 lines)
+
+The **deterministic decision engine** — the agent's trust boundary. A pure
+function `decide(classification, policy, escalation_count) → Decision` that maps
+every inbound message type to exactly one action:
+
+| Message Type | Action | Condition |
+|---|---|---|
+| `FINAL_RESOLUTION` | `MARK_RESOLVED` | Counterparty confirmed resolution |
+| `INFO_REQUEST` | `PROVIDE_INFO` | They need more details from us |
+| `UNKNOWN` | `PROVIDE_INFO` | Unclear reply; ask to clarify |
+| `DENIAL` | `ESCALATE` / `MARK_DENIED` | Escalate if budget remains; else deny |
+| `DEFLECTION` / dark-pattern | `ESCALATE` / `PAUSE_FOR_APPROVAL` | Escalate if budget; else ask user |
+| `OFFER` (forbidden kind) | `COUNTER_OFFER` | Never accept forbidden outcomes |
+| `OFFER` (≥ min amount) | `ACCEPT` | Meets minimum acceptable amount |
+| `OFFER` (< min, ask user) | `PAUSE_FOR_APPROVAL` | Below threshold; pause for human |
+| `OFFER` (< min, auto) | `COUNTER_OFFER` | Auto-counter toward target |
+| `OFFER` (cancellation goal) | `ESCALATE` | Money/discount = retention bait |
+
+**Key constraints enforced:**
+- **No LLM** — pure, auditable Python. Same inputs → same Decision, every time.
+- Never returns `ACCEPT` when `offer_kind` is in `policy.forbidden_outcomes`.
+- Never returns `ACCEPT` for an amount below `min_acceptable_amount`.
+- Escalates only while `escalation_count < escalation_budget`; else pauses or denies.
+- A cancellation goal (`target_amount == 0`, `min_acceptable_amount == 0`) never
+  accepts a money/discount offer — treats it as retention bait and escalates.
+
+### Orchestrator — `advocate/agent/orchestrator.py` (409 lines)
+
+The **durable, resumable resolution loop** that ties everything together:
+
+- **`resolve_case(case_id, db_path)`** — runs (or resumes) the full lifecycle.
+- **`_apply_decision(case, decision, channel, llm, store)`** — maps each action
+  to its side effects: compose & send messages, update status, set outcomes.
+- **`_compose_message(case, action, llm)`** — uses the LLM only to *phrase*
+  outbound messages. The action was already decided by the negotiator; the LLM
+  never overrides it. Includes hardcoded fallback messages for resilience.
+- **`_handle_resume(case, channel, llm, store)`** — resumes a case after the
+  human clicked approve or reject from the dashboard.
+
+**Key properties:**
+- Persists the Case after **every** step so the dashboard animates live.
+- Increments `escalation_count` on `ESCALATE`; uses the strategist's escalation
+  ladder for progressively firmer messages.
+- `MAX_TURNS = 12` safety cap so a buggy loop can never run forever.
+- One bad LLM/channel reply is caught and recorded, not fatal to the case.
+- 0.8s delay between turns for visual dashboard animation.
+
+### Server Wiring — `server.py` (modified)
+
+- Enabled the `run_agent()` → `resolve_case()` hand-off on a background thread.
+- Passes counterparty mode (`llm` or `scripted`) through `case.context`.
+- Fixed the `/approve` endpoint to record the human's decision **and** spawn a
+  new background thread to resume the agent.
 
 ---
 
 ## Setup and Run
 
-**Requirements:** Python 3.8+. The foundation has **zero third-party
-dependencies** (stdlib `http.server`, `sqlite3`, `urllib`). A working prototype
-LLM key is pre-filled in `.env` (shared quota — replace with your own for heavy
-use).
+**Requirements:** Python 3.8+. **Zero third-party dependencies.**
 
 ```bash
-# 1. (optional) point at your own LLM — see ".env" / ".env.example"
-cp .env.example .env        # then edit, or use the provided .env as-is
+# 1. Clone the repository
+git clone https://github.com/Shubham070msd/Advocate.git
+cd Advocate
 
-# 2. run the foundation
+# 2. Configure your LLM provider
+cp .env.example .env
+# Edit .env — Groq is free and fast (console.groq.com):
+#   ADVOCATE_LLM_PROVIDER=groq
+#   ADVOCATE_LLM_API_KEY=gsk_your_key_here
+#   ADVOCATE_LLM_MODEL=llama-3.3-70b-versatile
+
+# 3. Run
 python3 server.py           # → http://localhost:8000
 ```
 
-Open the dashboard, click **"refund example"**, and **Start Case**. The case is
-created and persisted. Until you build the agent, it shows as *new* and sits
-there — that is the no-op `run_agent()` waiting for your code.
-
-Once you implement `advocate/agent/orchestrator.resolve_case`, enable the
-hand-off in `server.py → run_agent()` (the lines are present, commented):
-
-```python
-from advocate.agent.orchestrator import resolve_case
-resolve_case(case_id, DB_PATH)
-```
-
-Refresh the dashboard and watch the timeline animate as the agent negotiates.
-
----
-
-## Dataset Files
-
-The "dataset" is a set of **sample input Cases** in `examples/` — each a JSON
-spec you can load from the dashboard (the *example* buttons), `POST` to
-`/api/cases`, or copy as a template for your own:
-
-| File | Goal type | Highlights |
-|---|---|---|
-| `examples/refund_case.json` | **Recover money** | Full ₹3,200 refund; `store_credit` forbidden; pause-for-approval below threshold. |
-| `examples/subscription_cancel_case.json` | **Get a confirmation** | Cancel a subscription; `target_amount = 0`; retention discounts must be treated as dark-patterns and escalated. |
-
-You are not limited to these — any consumer-support goal works (refund, partial
-refund, replacement, cancellation, billing dispute, warranty claim). See the
-schema below for the exact fields.
-
----
-
-## What is Already Implemented
-
-| Component | File | What it does |
-|---|---|---|
-| **LLM client** | `advocate/llm.py` | Provider-agnostic chat client. `chat()` → text, `chat_json()` → dict. |
-| **Data models** | `advocate/models.py` | `Case`, `ResolutionPolicy`, `CasePlan`, `Classification`, `Decision`, and the status/message/action/outcome enums. |
-| **Persistence** | `advocate/store.py` | SQLite store: `save` / `get` / `list` / `delete`. Survives restarts. |
-| **Channel interface** | `advocate/channels/base.py` | The `send` / `receive` / `open_case` boundary the loop talks to. |
-| **Simulated counterparty** | `advocate/channels/mock.py` | An LLM role-plays a stubborn support rep (deflect → lowball → settle). Build the whole loop with no real website. |
-| **Strategist** (LLM) | `advocate/agent/strategist.py` | `make_plan(case, llm)` → `CasePlan`. Defensive parsing + offline fallback. |
-| **Classifier** (LLM) | `advocate/agent/classifier.py` | `classify(case, reply, llm)` → `Classification`. Strict enum coercion + retention-pattern backstop. |
-| **Web dashboard** | `web/index.html` | Case list, live timeline, approve / reject. |
-| **Server shell** | `server.py` | Serves UI + storage API; has the marked `run_agent()` hand-off. |
-
----
-
-## What the Candidate Needs to Build
-
-Two files raise `NotImplementedError` until you implement them. Each opens with a
-detailed **CANDIDATE TASK** banner (objective, spec, example prompt where
-relevant, wiring, and acceptance criteria). The strategist and classifier are
-already provided, so you focus on the decision logic and the loop.
-
-### Task 1 — Negotiator  (`advocate/agent/negotiator.py`)
-
-The **deterministic decision engine** — the agent's trust boundary. Given a
-`Classification` (what the counterparty said), the `ResolutionPolicy` (the user's
-mandate), and the current escalation count, return the single next `Decision`
-(accept / counter / escalate / pause / resolve / deny / abandon).
-
-- **No LLM** — pure, auditable Python so a model mistake can never approve a
-  payment or break a "never" rule.
-- Must never accept a `forbidden_outcomes` kind or an amount below
-  `min_acceptable_amount`; must respect the `escalation_budget`; must treat a
-  cancellation goal's money/discount offers as retention bait.
-
-### Task 2 — Orchestrator  (`advocate/agent/orchestrator.py`) + wiring
-
-The **durable, resumable loop** that ties everything together:
-`plan → open → (receive → classify → decide → act → persist) → repeat`, until a
-terminal state or a human pause.
-
-- Persist the Case after **every** step so the dashboard animates live.
-- Increment the escalation budget, set terminal outcomes, and handle the
-  `NEEDS_APPROVAL` pause **and resume** (via `/approve`).
-- Use the LLM only to *phrase* outbound messages — never to re-decide the action.
-- Finally, **enable the hand-off** in `server.py → run_agent()`.
-
-> Stretch (optional, not required): build a **real channel** —
-> `channels/web_playwright.py` (browser) or `channels/email_channel.py` (IMAP/SMTP)
-> — behind the same `Channel` interface; the loop works unchanged.
-
-Quick check of what's left to build:
+**Switching providers** is an `.env` change only:
 
 ```bash
-grep -rn "NotImplementedError" advocate/agent/negotiator.py advocate/agent/orchestrator.py
-```
-
----
-
-## How the LLM Connector Works
-
-Everything talks to the model through one small class — `LLMClient` in
-`advocate/llm.py` — so the rest of the code never cares which provider answered:
-
-```python
-from advocate.llm import LLMClient
-
-llm = LLMClient()
-text = llm.chat([{"role": "user", "content": "Hello"}])              # -> str
-data = llm.chat_json([{"role": "user", "content": "Return JSON ..."}])  # -> dict
-```
-
-- **`chat(messages)`** returns the assistant's reply as a string.
-- **`chat_json(messages)`** asks for JSON and best-effort parses/repairs it into a
-  `dict` (strips ``` fences, extracts the `{...}` object).
-- Transport is plain `urllib` with retries on `429`/`5xx`. No SDKs to install.
-
-**Switching providers** is usually an `.env` change only:
-
-```bash
-# OpenAI (default)
-ADVOCATE_LLM_PROVIDER=openai     ADVOCATE_LLM_API_KEY=sk-...      ADVOCATE_LLM_MODEL=gpt-4o-mini
-# Groq            (OpenAI-compatible)
+# Groq (used in this build — free tier)
 ADVOCATE_LLM_PROVIDER=groq       ADVOCATE_LLM_API_KEY=gsk_...     ADVOCATE_LLM_MODEL=llama-3.3-70b-versatile
-# DeepSeek        (OpenAI-compatible)
-ADVOCATE_LLM_PROVIDER=deepseek   ADVOCATE_LLM_API_KEY=sk-...      ADVOCATE_LLM_MODEL=deepseek-chat
-# Ollama (local, free; run `ollama serve` first; no key)
-ADVOCATE_LLM_PROVIDER=ollama     ADVOCATE_LLM_MODEL=llama3.1
-# Anthropic Claude (adapter already built in)
+# OpenAI
+ADVOCATE_LLM_PROVIDER=openai     ADVOCATE_LLM_API_KEY=sk-...      ADVOCATE_LLM_MODEL=gpt-4o-mini
+# Anthropic Claude (adapter built in)
 ADVOCATE_LLM_PROVIDER=anthropic  ADVOCATE_LLM_API_KEY=sk-ant-...  ADVOCATE_LLM_MODEL=claude-sonnet-4-6
+# Ollama (local, free; run `ollama serve` first)
+ADVOCATE_LLM_PROVIDER=ollama     ADVOCATE_LLM_MODEL=llama3.1
 ```
 
-- **OpenAI-compatible providers** (Groq, DeepSeek, Together, Ollama, vLLM): env
-  vars only.
-- **Anthropic Claude**: supported via the built-in adapter.
-- **A brand-new provider**: add one entry to the `PROVIDERS` dict in `llm.py`.
+**Reset between test runs:**
+
+```bash
+rm advocate.db && python3 server.py
+```
 
 ---
 
 ## Dataset Schema Reference
 
-A **Case** is the unit of work. Inbound fields you supply (the rest are managed
-by the agent at runtime):
+A **Case** is the unit of work:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -306,10 +271,6 @@ by the agent at runtime):
 | `escalation_budget` | int | `2` | How many times the agent may escalate before pausing / giving up. |
 | `notes` | string | `""` | Extra instructions surfaced to the LLM agents. |
 
-**Runtime fields** (set by the agent, returned by the API): `case_id`, `status`,
-`plan`, `transcript`, `escalation_count`, `outcome_kind`, `outcome_amount`,
-`created_at`, `updated_at`.
-
 **Enums:**
 
 | Enum | Values |
@@ -319,21 +280,60 @@ by the agent at runtime):
 | `ActionType` | `provide_info`, `counter_offer`, `accept`, `escalate`, `pause_for_approval`, `mark_resolved`, `mark_denied`, `abandon` |
 | `OutcomeKind` | `refund`, `replacement`, `store_credit`, `apology`, `none` |
 
-**Example Case (the refund sample):**
+---
 
-```json
-{
-  "goal": "Get a full refund for order #4821 (a ceramic dinner set, ₹3,200) — it arrived cracked. I want my money back, not a replacement or store credit.",
-  "context": { "order_id": "#4821", "order_amount": 3200, "account_email": "buyer@example.com" },
-  "evidence": ["photo_cracked_plate_1.jpg", "unboxing_video.mp4", "order_invoice.pdf"],
-  "policy": {
-    "currency": "INR",
-    "min_acceptable_amount": 3200,
-    "target_amount": 3200,
-    "forbidden_outcomes": ["store_credit"],
-    "ask_below_threshold": true,
-    "escalation_budget": 2,
-    "notes": "Customer paid by card and wants the refund to the original payment method."
-  }
-}
-```
+## Testing Guide
+
+### Test 1 — Refund Case
+1. Click **"refund example"** → **Start Case**
+2. Watch Advocate negotiate a ₹3,200 refund for a broken ceramic dinner set
+3. The agent should: open → handle deflection → counter lowball → recover full amount
+4. **Verify:** store credit offers are never accepted (forbidden outcome)
+
+### Test 2 — Subscription Cancellation
+1. Click **"cancel example"** → **Start Case**
+2. Watch Advocate handle retention dark patterns
+3. The agent should: recognize discount offers as retention bait → escalate
+4. **Verify:** money/discount offers are NOT accepted (cancellation goal)
+
+### Test 3 — Human-in-the-Loop
+1. Start a refund case with `min_acceptable_amount` set higher than likely offers
+2. When `NEEDS_APPROVAL` fires, click **Reject** → agent pushes back
+3. Or click **Approve** → agent accepts the offer
+4. **Verify:** the loop resumes correctly after both approve and reject
+
+---
+
+## Future Scope
+
+**Near-term:**
+- Real channel connectors — Playwright browser automation for live chat widgets
+- IMAP/SMTP email channel for email-based disputes
+- Evidence attachment handling — automatic photo/invoice extraction
+- Slack/Teams notifications when a case reaches `NEEDS_APPROVAL`
+
+**Medium-term:**
+- Multi-company playbook library — company-specific escalation strategies
+- Natural-language policy entry — parse user intent into structured `ResolutionPolicy`
+- Chargeback and regulatory filing stubs when negotiation fails
+- Voice channel support — IVR navigation and call-transcript classification
+
+**Long-term:**
+- Org-wide consumer intelligence — aggregate outcomes across thousands of disputes
+- Legal document generation — small-claims filings, GDPR erasure requests
+- Cross-jurisdiction policy engine — apply country-specific consumer protection rules
+- Confidence-gated auto-accept for offers clearly exceeding the target
+
+---
+
+## Author
+
+**Manjunath Huddar**
+
+| | |
+|---|---|
+| **GitHub** | [github.com/Shubham070msd](https://github.com/Shubham070msd) |
+| **Portfolio** | [manjunath-07.vercel.app](https://manjunath-07.vercel.app) |
+| **LinkedIn** | [linkedin.com/in/manjunath-huddar-devops](https://linkedin.com/in/manjunath-huddar-devops) |
+
+Built for **HackerEarth × Microsoft Build AI Day** — Theme 3: Agentic Productivity
