@@ -5,3 +5,4 @@ advocate.db
 *.db-wal
 *.db-shm
 .env
+.env
