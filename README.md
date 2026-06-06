@@ -1,4 +1,4 @@
-# Advocate — Autonomous Web Resolution Agent (Hackathon Starter Kit)
+# Advocate — Autonomous Web Resolution Agent
 
 ## Problem Statement
 
